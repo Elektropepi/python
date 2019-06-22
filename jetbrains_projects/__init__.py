@@ -5,6 +5,7 @@
 Synopsis: <trigger> <filter>"""
 
 import os
+import re
 from shutil import which
 from xml.etree import ElementTree
 
@@ -21,25 +22,27 @@ default_icon = os.path.dirname(__file__) + "/jetbrains.svg"
 HOME_DIR = os.environ["HOME"]
 
 paths = [  # <Name for config directory>, <possible names for the binary/icon>
-    ["CLion", "clion"],
-    ["DataGrip", "datagrip"],
-    ["GoLand", "goland"],
-    ["IntelliJIdea",
-     "intellij-idea-ue-bundled-jre intellij-idea-ultimate-edition idea-ce-eap idea-ue-eap idea idea-ultimate"],
-    ["PhpStorm", "phpstorm"],
-    ["PyCharm", "pycharm pycharm-eap charm"],
-    ["WebStorm", "webstorm"],
+    ["CLion", "clion", "jetbrains-clion"],
+    ["DataGrip", "datagrip", "jetbrains-datagrip"],
+    ["GoLand", "goland", "jetbrains-goland"],
+    ["IntelliJIdea", "intellij-idea-ue-bundled-jre intellij-idea-ultimate-edition idea-ce-eap idea-ue-eap idea idea-ultimate", "jetbrains-idea"],
+    ["PhpStorm", "phpstorm", "jetbrains-phpstorm"],
+    ["PyCharm", "pycharm pycharm-eap charm", "jetbrains-pycharm"],
+    ["WebStorm", "webstorm", "jetbrains-webstorm"],
+    ["Rider", "rider", "jetbrains-rider"],
 ]
 
 
 # find the executable path and icon of a program described by space-separated lists of possible binary-names
 def find_exec(namestr: str):
-    for name in namestr.split(" "):
-        executable = which(name)
-        if executable:
-            icon = iconLookup(name) or default_icon
-            return executable, icon
-    return None
+    desktop_path = HOME_DIR + "/.local/share/applications/" + namestr + ".desktop";
+    if not os.path.exists(desktop_path):
+        return None
+    with open(desktop_path, 'r') as file:
+          desktop_file = file.read()
+    icon_match = re.search("Icon=(.*)", desktop_file)
+    exec_match = re.search("Exec=\"(.*)\"", desktop_file)
+    return exec_match.group(1), icon_match.group(1)
 
 
 # parse the xml at path, return all recent project paths and the time they were last open
@@ -64,7 +67,22 @@ def get_proj(path):
             for o in i[0][0]:
                 if o.attrib["name"] == 'projectOpenTimestamp':
                     items[i.attrib["key"]] = int(o.attrib["value"])
-    return [(items[e], e.replace("$USER_HOME$", HOME_DIR)) for e in items]
+
+    result = []
+    for e in items:
+        project_path = e.replace("$USER_HOME$", HOME_DIR)
+        if project_path.endswith(".sln"):
+            project_path_parts = project_path.split("/")
+            del project_path_parts[-1]
+            project_path = "/".join(project_path_parts)
+        name_file_path = project_path + "/.idea/.name"
+        if os.path.exists(name_file_path):
+            with open(name_file_path, 'r') as name_file:
+                project_name = name_file.read()
+        else:
+            project_name = project_path.split("/")[-1]
+        result.append((items[e], e.replace("$USER_HOME$", HOME_DIR), project_name))
+    return result
 
 
 def handleQuery(query):
@@ -78,6 +96,8 @@ def handleQuery(query):
             config_path = "config/options/recentProjectDirectories.xml"
             if app[0] == "IntelliJIdea":
                 config_path = "config/options/recentProjects.xml"
+            if app[0] == "Rider":
+                config_path = "config/options/recentSolutions.xml"
 
             # dirs contains possibly multiple directories for a program (eg. .GoLand2018.1 and .GoLand2017.3)
             dirs = [f for f in os.listdir(HOME_DIR) if
@@ -92,22 +112,22 @@ def handleQuery(query):
                 continue
 
             # extract the binary name and icon
-            binaries[app[0]] = find_exec(app[1])
+            binaries[app[0]] = find_exec(app[2])
 
             # add all recently opened projects
-            projects.extend([[e[0], e[1], app[0]] for e in get_proj(config_path)])
+            projects.extend([[e[0], e[1], e[2], app[0]] for e in get_proj(config_path)])
         projects.sort(key=lambda s: s[0], reverse=True)
 
         # List all projects or the one corresponding to the query
         if query.string:
-            projects = [p for p in projects if p[1].lower().find(query.string.lower()) != -1]
+            projects = [p for p in projects if p[2].lower().find(query.string.lower()) != -1]
 
         items = []
         for p in projects:
             last_update = p[0]
             project_path = p[1]
-            project_dir = project_path.split("/")[-1]
-            product_name = p[2]
+            project_name = p[2]
+            product_name = p[3]
             binary = binaries[product_name]
             if not binary:
                 continue
@@ -118,9 +138,9 @@ def handleQuery(query):
             items.append(Item(
                 id="-" + str(last_update),
                 icon=icon,
-                text=project_dir,
+                text=project_name,
                 subtext=project_path,
-                completion=__trigger__ + project_dir,
+                completion=__trigger__ + project_name,
                 actions=[
                     ProcAction("Open in %s" % product_name, [executable, project_path])
                 ]
